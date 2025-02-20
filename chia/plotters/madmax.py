@@ -1,18 +1,15 @@
-import asyncio
-import traceback
-import os
-import logging
-import sys
+from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import sys
+import traceback
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
+from chia.plotters.plotters_util import get_venv_bin, reset_loop_policy_for_windows, run_command, run_plotter
 from chia.plotting.create_plots import resolve_plot_keys
-from chia.plotters.plotters_util import (
-    run_plotter,
-    run_command,
-    reset_loop_policy_for_windows,
-    get_venv_bin,
-)
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +18,7 @@ MADMAX_PLOTTER_DIR = "madmax-plotter"
 
 
 def is_madmax_supported() -> bool:
-    return sys.platform.startswith("linux") or sys.platform in ["darwin", "win32", "cygwin"]
+    return sys.platform.startswith("linux") or sys.platform in {"darwin", "win32", "cygwin"}
 
 
 def get_madmax_src_path(plotters_root_path: Path) -> Path:
@@ -29,7 +26,10 @@ def get_madmax_src_path(plotters_root_path: Path) -> Path:
 
 
 def get_madmax_package_path() -> Path:
-    return Path(os.path.dirname(sys.executable)) / "madmax"
+    p = Path(os.path.dirname(sys.executable)).joinpath("_internal/madmax")
+    if p.exists():
+        return p
+    return Path(os.path.dirname(sys.executable)).joinpath("madmax")
 
 
 def get_madmax_exec_venv_path(ksize: int = 32) -> Optional[Path]:
@@ -39,7 +39,7 @@ def get_madmax_exec_venv_path(ksize: int = 32) -> Optional[Path]:
     madmax_exec = "chia_plot"
     if ksize > 32:
         madmax_exec += "_k34"  # Use the chia_plot_k34 executable for k-sizes > 32
-    if sys.platform in ["win32", "cygwin"]:
+    if sys.platform in {"win32", "cygwin"}:
         madmax_exec += ".exe"
     return venv_bin_path / madmax_exec
 
@@ -49,7 +49,7 @@ def get_madmax_exec_src_path(plotters_root_path: Path, ksize: int = 32) -> Path:
     madmax_exec = "chia_plot"
     if ksize > 32:
         madmax_exec += "_k34"  # Use the chia_plot_k34 executable for k-sizes > 32
-    if sys.platform in ["win32", "cygwin"]:
+    if sys.platform in {"win32", "cygwin"}:
         madmax_exec += ".exe"
     return madmax_src_dir / madmax_exec
 
@@ -59,7 +59,7 @@ def get_madmax_exec_package_path(ksize: int = 32) -> Path:
     madmax_exec: str = "chia_plot"
     if ksize > 32:
         madmax_exec += "_k34"  # Use the chia_plot_k34 executable for k-sizes > 32
-    if sys.platform in ["win32", "cygwin"]:
+    if sys.platform in {"win32", "cygwin"}:
         madmax_exec += ".exe"
     return madmax_dir / madmax_exec
 
@@ -86,7 +86,11 @@ def get_madmax_version(plotters_root_path: Path):
             "Failed to call madmax with --version option",
             capture_output=True,
             text=True,
+            check=False,
         )
+        if proc.returncode != 0:
+            return None, proc.stderr.strip()
+
         # (Found, versionStr)
         version_str = proc.stdout.strip()
         return True, version_str.split(".")
@@ -96,8 +100,8 @@ def get_madmax_version(plotters_root_path: Path):
         return None, f"Failed to determine madmax version: {e} {tb}"
 
 
-def get_madmax_install_info(plotters_root_path: Path) -> Optional[Dict[str, Any]]:
-    info: Dict[str, Any] = {"display_name": "madMAx Plotter"}
+def get_madmax_install_info(plotters_root_path: Path) -> Optional[dict[str, Any]]:
+    info: dict[str, Any] = {"display_name": "madMAx Plotter"}
     installed: bool = False
     supported: bool = is_madmax_supported()
 
@@ -108,7 +112,7 @@ def get_madmax_install_info(plotters_root_path: Path) -> Optional[Dict[str, Any]
         if found:
             version = ".".join(result_msg)
         elif found is None:
-            print(result_msg)
+            print(f"Failed to determine madMAx version: {result_msg}")
 
         if version is not None:
             installed = True
@@ -156,7 +160,9 @@ def plot_madmax(args, chia_root_path: Path, plotters_root_path: Path):
 
         # madMAx has a ulimit -n requirement > 296:
         # "Cannot open at least 296 files, please raise maximum open file limit in OS."
-        resource.setrlimit(resource.RLIMIT_NOFILE, (512, 512))
+        _soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # Set soft limit to max (hard limit)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard_limit, hard_limit))
     else:
         reset_loop_policy_for_windows()
 

@@ -1,12 +1,16 @@
+# Package: utils
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import os
 import sys
 import time
+from collections.abc import Iterator
 from types import FrameType
-from typing import Any, Dict, List
+from typing import Any
 
 # This is a development utility that instruments tasks (coroutines) and records
 # wall-clock time they spend in various functions. Since it relies on
@@ -14,7 +18,12 @@ from typing import Any, Dict, List
 
 # to enable this instrumentation, set one of the environment variables:
 
-#   CHIA_INSTRUMENT_NODE=1
+#   CHIA_INSTRUMENT_DATA_LAYER=1
+#   CHIA_INSTRUMENT_FARMER=1
+#   CHIA_INSTRUMENT_FULL_NODE=1
+#   CHIA_INSTRUMENT_HARVESTER=1
+#   CHIA_INSTRUMENT_INTRODUCER=1
+#   CHIA_INSTRUMENT_TIMELORD=1
 #   CHIA_INSTRUMENT_WALLET=1
 
 # Before starting the daemon.
@@ -48,7 +57,7 @@ class CallInfo:
 
 
 class TaskInfo:
-    stack: Dict[FrameType, FrameInfo]
+    stack: dict[FrameType, FrameInfo]
     stack_pos: int
 
     def __init__(self) -> None:
@@ -64,7 +73,7 @@ class FunctionInfo:
     file: str
     num_calls: int
     duration: float
-    callers: Dict[str, CallInfo]
+    callers: dict[str, CallInfo]
     fun_id: int
 
     def __init__(self, name: str, file: str) -> None:
@@ -80,9 +89,9 @@ class FunctionInfo:
 
 
 # maps tasks to call-treea
-g_function_infos: Dict[str, Dict[str, FunctionInfo]] = {}
+g_function_infos: dict[str, dict[str, FunctionInfo]] = {}
 
-g_tasks: Dict[asyncio.Task[Any], TaskInfo] = {}
+g_tasks: dict[asyncio.Task[Any], TaskInfo] = {}
 
 g_cwd = os.getcwd() + "/"
 
@@ -124,7 +133,7 @@ g_cwd = os.getcwd() + "/"
 def get_stack(frame: FrameType) -> str:
     ret = ""
     code = frame.f_code
-    while code.co_flags & inspect.CO_COROUTINE:  # pylint: disable=no-member
+    while code.co_flags & inspect.CO_COROUTINE:
         ret = f"/{code.co_name}{ret}"
         if frame.f_back is None:
             break
@@ -154,12 +163,11 @@ def get_file(frame: FrameType) -> str:
 
 
 def trace_fun(frame: FrameType, event: str, arg: Any) -> None:
-
-    if event in ["c_call", "c_return", "c_exception"]:
+    if event in {"c_call", "c_return", "c_exception"}:
         return
 
     # we only care about instrumenting co-routines
-    if (frame.f_code.co_flags & inspect.CO_COROUTINE) == 0:  # pylint: disable=no-member
+    if (frame.f_code.co_flags & inspect.CO_COROUTINE) == 0:
         # with open("instrumentation.log", "a") as f:
         #    f.write(f"[1]    {event} {get_fun(frame)}\n")
         return
@@ -167,9 +175,6 @@ def trace_fun(frame: FrameType, event: str, arg: Any) -> None:
     task = asyncio.current_task()
     if task is None:
         return
-
-    global g_tasks
-    global g_function_infos
 
     ti = g_tasks.get(task)
     if ti is None:
@@ -197,7 +202,6 @@ def trace_fun(frame: FrameType, event: str, arg: Any) -> None:
     #    f.write(f"{indent}CALL {t} {get_stack(frame)}\n")
 
     elif event == "return":
-
         fi = ti.stack.get(frame)
         assert fi is not None
 
@@ -209,7 +213,6 @@ def trace_fun(frame: FrameType, event: str, arg: Any) -> None:
             # with open("instrumentation.log", "a") as f:
             #    f.write(f"{indent}SUSPEND {t} {get_stack(frame)}\n")
         else:
-
             # with open("instrumentation.log", "a") as f:
             #    f.write(f"{indent}RETURN {t} {get_stack(frame)}\n")
 
@@ -247,7 +250,7 @@ def start_task_instrumentation() -> None:
 
 def color(pct: float) -> str:
     assert pct >= 0 and pct <= 100
-    return f"{int((100.-pct)//10)+1}"
+    return f"{int((100. - pct) // 10) + 1}"
 
 
 def fontcolor(pct: float) -> str:
@@ -257,11 +260,9 @@ def fontcolor(pct: float) -> str:
         return "black"
 
 
-def stop_task_instrumentation() -> None:
+def stop_task_instrumentation(target_dir: str = f"task-profile-{os.getpid()}") -> None:
     sys.setprofile(None)
-    global g_function_infos
 
-    target_dir = f"task-profile-{os.getpid()}"
     try:
         os.mkdir(target_dir)
     except Exception:
@@ -290,7 +291,6 @@ def stop_task_instrumentation() -> None:
 
             # print all nodes (functions)
             for name, fun_info in call_tree.items():
-
                 # frames that are less than 0.1% of the total wall-clock time are
                 # filtered
                 if fun_info.duration / total_duration < 0.001:
@@ -301,7 +301,7 @@ def stop_task_instrumentation() -> None:
                     f'frame_{fun_info.fun_id} [shape=box, label="{fun_info.name}()\\l'
                     f"{fun_info.file}\\l"
                     f"{percent:0.2f}%\\n"
-                    f"{fun_info.duration*1000:0.2f}ms\\n"
+                    f"{fun_info.duration * 1000:0.2f}ms\\n"
                     f'{fun_info.num_calls}x\\n",'
                     f"fillcolor={color(percent)}, "
                     f"color={color(percent)}, "
@@ -310,7 +310,6 @@ def stop_task_instrumentation() -> None:
 
             # print all edges (calls)
             for name, fun_info in call_tree.items():
-
                 if name in filter_frames:
                     continue
 
@@ -329,19 +328,37 @@ def stop_task_instrumentation() -> None:
                     f.write(
                         f"frame_{caller_info.fun_id} -> frame_{fun_info.fun_id} "
                         f'[label="{percent:0.2f}%\\n{ci.calls}x",'
-                        f"penwidth={0.3+(ci.duration*6/total_duration):0.2f},"
+                        f"penwidth={0.3 + (ci.duration * 6 / total_duration):0.2f},"
                         f"color={color(percent)}]\n"
                     )
             f.write("}\n")
 
 
-if __name__ == "__main__":
+@contextlib.contextmanager
+def manage_task_instrumentation() -> Iterator[None]:
+    start_task_instrumentation()
+    try:
+        yield
+    finally:
+        stop_task_instrumentation()
+
+
+@contextlib.contextmanager
+def maybe_manage_task_instrumentation(enable: bool) -> Iterator[None]:
+    if enable:
+        with manage_task_instrumentation():
+            yield
+    else:
+        yield
+
+
+def main(args: list[str]) -> int:
     import glob
     import pathlib
     import subprocess
 
-    profile_dir = pathlib.Path(sys.argv[1])
-    queue: List[subprocess.Popen[bytes]] = []
+    profile_dir = pathlib.Path(args[0])
+    queue: list[subprocess.Popen[bytes]] = []
     for file in glob.glob(str(profile_dir / "*.dot")):
         print(file)
         if os.path.exists(file + ".png"):
@@ -357,3 +374,9 @@ if __name__ == "__main__":
     while len(queue) > 0:
         oldest = queue.pop(0)
         oldest.wait()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(args=sys.argv[1:]))
